@@ -1,0 +1,7 @@
+إصلاحان موجهان بناءً على رسائل البناء المرسلة.
+
+1) أضيف استيراد dart:ui show TextDirection إلى attendance_reports_home_screen.dart.
+2) تم تثبيت record_linux على 1.2.1 وrecord_platform_interface على 1.2.0 لتجنب حلّ نسخ غير متوافقة من واجهة المنصة.
+
+لم تتغير قواعد Firebase أو صلاحيات المستخدمين في هذا الإصلاح.
+لم يُنفذ flutter pub get أو flutter analyze أو بناء APK لأن Flutter/Dart غير متاحين في بيئة إعداد الملف. يجب اختبار البناء على جهاز التطوير. إذا استمر خطأ record_linux، أرسل نص الخطأ الكامل وسجل pub deps.

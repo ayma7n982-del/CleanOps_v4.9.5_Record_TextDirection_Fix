@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "170721836545",
+    "project_id": "nrc-aid",
+    "storage_bucket": "nrc-aid.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:170721836545:android:d4fe5333a3cf0b24af4a00",
+        "android_client_info": {
+          "package_name": "com.solidwaste.solid_waste_operations"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAa8b1275kDi-xxkiDbKVSOD8U0FvmTJBc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

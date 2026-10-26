@@ -1,0 +1,285 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function userDoc() {
+      return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data : {};
+    }
+    function role() { return userDoc().role != null ? userDoc().role : ''; }
+    function isL4() { return role() == 'donor_manager'; }
+    function isL3() { return role() == 'jsc_coordinator'; }
+    function isL2() { return role() == 'municipality_coordinator'; }
+    function isL2OrL3() { return isL2() || isL3(); }
+    function isL3OrL4() { return isL3() || isL4(); }
+    function isWorkforceRole(r) { return r == 'worker' || r == 'group_supervisor'; }
+    function self(uid) { return signedIn() && request.auth.uid == uid; }
+    function gpsTrackingEnabled() {
+      return exists(/databases/$(database)/documents/config/global)
+        && get(/databases/$(database)/documents/config/global).data.workerLocationTrackingEnabled == true;
+    }
+    function groupManagedByL2(groupId) {
+      return groupId is string && groupId.size() > 0
+        && exists(/databases/$(database)/documents/operations/$(groupId))
+        && get(/databases/$(database)/documents/operations/$(groupId)).data._entity == 'group'
+        && get(/databases/$(database)/documents/operations/$(groupId)).data.municipalityCoordinatorId == request.auth.uid;
+    }
+    function workforceManagedByL2() {
+      return isWorkforceRole(resource.data.role)
+        && (
+          (resource.data.keys().hasAny(['municipalityCoordinatorId'])
+            && resource.data.municipalityCoordinatorId == request.auth.uid)
+          || groupManagedByL2(resource.data.groupId)
+        );
+    }
+    function requestedWorkforceManagedByL2() {
+      return isWorkforceRole(request.resource.data.role)
+        && (
+          (request.resource.data.keys().hasAny(['municipalityCoordinatorId'])
+            && request.resource.data.municipalityCoordinatorId == request.auth.uid)
+          || groupManagedByL2(request.resource.data.groupId)
+        );
+    }
+    function cycleHasEnded(cycleId) {
+      return cycleId is string && cycleId.size() > 0
+        && exists(/databases/$(database)/documents/work_cycles/$(cycleId))
+        && get(/databases/$(database)/documents/work_cycles/$(cycleId)).data.endDate is timestamp
+        && get(/databases/$(database)/documents/work_cycles/$(cycleId)).data.endDate <= request.time;
+    }
+
+    // ---------------- Internal messaging ----------------
+    function messageTypeAllowed() { return request.resource.data.type in ['info', 'warning', 'emergency']; }
+    function validMessageFields() {
+      return request.resource.data.messageId is string
+        && request.resource.data.senderId == request.auth.uid
+        && request.resource.data.content is string
+        && request.resource.data.content.size() > 0
+        && request.resource.data.timestamp is timestamp
+        && request.resource.data.isRead is bool
+        && messageTypeAllowed();
+    }
+    function directTargetIsValid() {
+      return userDoc().keys().hasAny(['municipalityCoordinatorId'])
+        && userDoc().municipalityCoordinatorId is string
+        && request.resource.data.targetGroupId is string
+        && request.resource.data.targetGroupId == '__USER__:' + userDoc().municipalityCoordinatorId
+        && exists(/databases/$(database)/documents/users/$(userDoc().municipalityCoordinatorId))
+        && get(/databases/$(database)/documents/users/$(userDoc().municipalityCoordinatorId)).data.role == 'municipality_coordinator'
+        && get(/databases/$(database)/documents/users/$(userDoc().municipalityCoordinatorId)).data.isActive != false;
+    }
+    function messageRecipientRead() {
+      return resource.data.senderId == request.auth.uid
+        || (resource.data.keys().hasAny(['targetGroupId']) && resource.data.targetGroupId == '__USER__:' + request.auth.uid)
+        || (resource.data.keys().hasAny(['targetGroupId']) && resource.data.targetGroupId is string && resource.data.targetGroupId == userDoc().groupId)
+        || (resource.data.keys().hasAny(['targetGroupId']) && resource.data.targetGroupId == '__ALL_MUNICIPALITIES__' && isL2())
+        || (resource.data.keys().hasAny(['targetGroupId']) && resource.data.targetGroupId == '__JSC__' && isL3());
+    }
+    function messageCreateAllowed() {
+      return validMessageFields() && (
+        ((isL4() || isL3()) && request.resource.data.targetGroupId == '__ALL_MUNICIPALITIES__')
+        || (isL2() && request.resource.data.targetGroupId is string && request.resource.data.targetGroupId != null
+            && exists(/databases/$(database)/documents/operations/$(request.resource.data.targetGroupId))
+            && get(/databases/$(database)/documents/operations/$(request.resource.data.targetGroupId)).data._entity == 'group'
+            && get(/databases/$(database)/documents/operations/$(request.resource.data.targetGroupId)).data.municipalityCoordinatorId == request.auth.uid)
+        || (role() == 'group_supervisor' && directTargetIsValid() && request.resource.data.type in ['info', 'emergency'])
+        || ((role() == 'group_supervisor' || role() == 'worker') && request.resource.data.targetGroupId == '__JSC__' && request.resource.data.type in ['info','warning','emergency'] && userDoc().groupId is string)
+        || (isL2() && request.resource.data.targetGroupId == '__JSC__' && request.resource.data.type in ['info','warning','emergency'])
+      );
+    }
+    function messageReadUpdateAllowed() {
+      return signedIn() && resource.data.keys().hasAny(['targetGroupId'])
+        && resource.data.targetGroupId == '__USER__:' + request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']);
+    }
+    match /messages/{messageId} {
+      allow read: if messageRecipientRead();
+      allow create: if messageCreateAllowed() && request.resource.data.messageId == messageId;
+      allow update: if messageReadUpdateAllowed();
+      allow delete: if false;
+    }
+
+    // ---------------- User profiles / GPS ----------------
+    match /users/{uid} {
+      allow get: if self(uid) || isL3OrL4() || (isL2() && uid == request.auth.uid);
+      allow list: if isL3OrL4() || (isL2() && resource.data.keys().hasAny(['municipalityCoordinatorId']) && resource.data.municipalityCoordinatorId == request.auth.uid);
+      // Accounts are created directly from the app by Level 4 (management roles)
+      // and Level 2 (workforce roles). The Auth account is created client-side.
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly([
+          'id','username','email','contactEmail','name','role','scope','phone','employeeId','jobTitle','notes',
+          'groupId','municipalityCoordinatorId','municipalityName','cycleId','isActive','status','createdBy','createdByRole',
+          'createdAt','updatedAt'
+        ])
+        && request.resource.data.id == uid
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.isActive == true
+        && request.resource.data.username is string
+        && request.resource.data.username.size() >= 3
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && (
+          (isL4() && request.resource.data.role in ['donor_manager','jsc_coordinator','municipality_coordinator'])
+          || (isL2() && isWorkforceRole(request.resource.data.role)
+              && request.resource.data.municipalityCoordinatorId == request.auth.uid
+              && request.resource.data.groupId is string && request.resource.data.groupId.size() > 0
+              && request.resource.data.cycleId is string
+              && exists(/databases/$(database)/documents/work_cycles/$(request.resource.data.cycleId))
+              && get(/databases/$(database)/documents/work_cycles/$(request.resource.data.cycleId)).data.status == 'active')
+        );
+      allow update: if (
+          isL4()
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.username == resource.data.username
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'name','phone','scope','employeeId','jobTitle','notes','isActive','status',
+            'deactivatedAt','deactivatedBy','updatedAt','updatedBy'
+          ])
+          && (uid != request.auth.uid || request.resource.data.isActive != false)
+        )
+        || (
+          isL2()
+          && workforceManagedByL2()
+          && requestedWorkforceManagedByL2()
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.username == resource.data.username
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'name','phone','groupId','groupName','cycleId','isActive','status',
+            'frozenAt','frozenBy','deactivatedAt','deactivatedBy','updatedAt','updatedBy'
+          ])
+          && (request.resource.data.isActive != false
+              || cycleHasEnded(request.resource.data.cycleId))
+        )
+        || (
+          self(uid) && isWorkforceRole(resource.data.role) && resource.data.isActive != false
+          && gpsTrackingEnabled()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastLocation','lastLocationAt'])
+          && request.resource.data.lastLocation is latlng
+          && request.resource.data.lastLocationAt is timestamp
+        );
+      allow delete: if false;
+    }
+
+    // ---------------- Work cycles: Level 4 write only ----------------
+    match /work_cycles/{id} {
+      allow read: if signedIn();
+      allow create: if isL4()
+        && request.resource.data.status == 'active'
+        && request.resource.data.startDate is timestamp
+        && request.resource.data.endDate is timestamp
+        && request.resource.data.endDate > request.resource.data.startDate;
+      allow update: if isL4()
+        && resource.data.status == 'active'
+        && request.resource.data.status == 'archived'
+        && request.resource.data.archivedBy == request.auth.uid
+        && request.resource.data.archivedAt is timestamp
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','archivedBy','archivedAt']);
+      allow delete: if isL4();
+    }
+
+    // ---------------- Smart dumpsites: Level 2/3 ----------------
+    match /dumpsites/{id} {
+      allow read: if signedIn();
+      allow create: if isL2OrL3()
+        && request.resource.data.nameAr is string
+        && request.resource.data.nameEn is string
+        && request.resource.data.capacity is number
+        && request.resource.data.fillPercentage is number
+        && request.resource.data.fillPercentage >= 0
+        && request.resource.data.fillPercentage <= 100
+        && request.resource.data.isActive is bool
+        && (!request.resource.data.keys().hasAny(['locationGeo']) || request.resource.data.locationGeo is latlng);
+      allow update: if isL2OrL3()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'name','nameAr','nameEn','code','location','locationGeo','capacity','fillPercentage','isActive',
+          'createdBy','createdAt','updatedBy','updatedAt'
+        ])
+        && request.resource.data.nameAr is string
+        && request.resource.data.nameEn is string
+        && request.resource.data.capacity is number
+        && request.resource.data.fillPercentage is number
+        && request.resource.data.fillPercentage >= 0
+        && request.resource.data.fillPercentage <= 100
+        && request.resource.data.isActive is bool
+        && (!request.resource.data.keys().hasAny(['locationGeo']) || request.resource.data.locationGeo is latlng);
+      allow delete: if false;
+    }
+
+    // ---------------- Smart Container Management ----------------
+    match /containers/{id} {
+      allow read: if isL3OrL4()
+        || (isL2() && resource.data.municipalityId == request.auth.uid)
+        || ((role() == 'group_supervisor' || role() == 'worker') && resource.data.groupId == userDoc().groupId);
+      allow create: if isL3()
+        && request.resource.data.id == id
+        && request.resource.data.locationName is string
+        && request.resource.data.gpsCoordinates is map
+        && request.resource.data.gpsCoordinates.lat is number
+        && request.resource.data.gpsCoordinates.lng is number
+        && request.resource.data.gpsCoordinates.lat >= -90
+        && request.resource.data.gpsCoordinates.lat <= 90
+        && request.resource.data.gpsCoordinates.lng >= -180
+        && request.resource.data.gpsCoordinates.lng <= 180
+        && request.resource.data.status in ['empty','partial','full']
+        && request.resource.data.issueStatus == 'none';
+      allow update: if isL3()
+        || (isL2() && resource.data.municipalityId == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['issueStatus','feedbackNotes','updatedAt','updatedBy']))
+        || ((role() == 'group_supervisor' || role() == 'worker') && resource.data.groupId == userDoc().groupId
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','issueStatus','feedbackNotes','updatedAt','updatedBy']));
+      allow delete: if false;
+    }
+
+    // ---------------- Existing operations ----------------
+    match /operations/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn() && (
+        (isL4() && (request.resource.data._entity == 'report' || request.resource.data._entity == 'user'))
+        || (isL2() && (request.resource.data._entity == 'group' || request.resource.data._entity == 'cart_redirect' || request.resource.data._entity == 'worker'))
+        || (isL3() && (request.resource.data._entity == 'heavy_machinery' || request.resource.data._entity == 'emergency' || request.resource.data._entity == 'notification' || request.resource.data._entity == 'report'))
+        || (role() == 'group_supervisor' && (request.resource.data._entity == 'trip' || request.resource.data._entity == 'trip_photo' || request.resource.data._entity == 'attendance' || request.resource.data._entity == 'street_photo' || request.resource.data._entity == 'emergency' || request.resource.data._entity == 'notification' || request.resource.data._entity == 'report'))
+      );
+      allow update: if signedIn() && (
+        (isL4() && (resource.data._entity == 'report' || resource.data._entity == 'user'))
+        || (isL2() && (resource.data._entity == 'group' || resource.data._entity == 'cart_redirect' || resource.data._entity == 'worker'))
+        || (isL3() && (resource.data._entity == 'heavy_machinery' || resource.data._entity == 'emergency' || resource.data._entity == 'notification' || resource.data._entity == 'report'))
+        || (role() == 'group_supervisor' && (resource.data._entity == 'trip' || resource.data._entity == 'trip_photo' || resource.data._entity == 'attendance' || resource.data._entity == 'street_photo' || resource.data._entity == 'emergency' || resource.data._entity == 'notification' || resource.data._entity == 'report'))
+      );
+      allow delete: if isL2() && resource.data._entity == 'group';
+    }
+
+    match /user_provisioning_requests/{id} {
+      allow read: if isL2() || isL4();
+      allow create: if isL2() && request.resource.data.requestedBy == request.auth.uid && isWorkforceRole(request.resource.data.role);
+      allow update, delete: if false;
+    }
+    match /audit/{id} {
+      allow read: if isL4();
+      allow create: if signedIn() && request.resource.data.actorId == request.auth.uid;
+      allow update, delete: if false;
+    }
+    match /ai_state/{document=**} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+
+    // ---------------- Feature flags: editable only by Level 3/4 ----------------
+    match /config/global {
+      allow read: if signedIn();
+      allow update: if isL4()
+        || (isL3()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'liveOperationsMapEnabled','workerLocationTrackingEnabled','configVersion'
+          ])
+          && request.resource.data.liveOperationsMapEnabled is bool
+          && request.resource.data.workerLocationTrackingEnabled is bool);
+      allow create: if isL4() || (isL3()
+        && request.resource.data.keys().hasOnly(['liveOperationsMapEnabled','workerLocationTrackingEnabled','configVersion'])
+        && request.resource.data.liveOperationsMapEnabled is bool
+        && request.resource.data.workerLocationTrackingEnabled is bool);
+      allow delete: if false;
+    }
+    match /config/{document=**} {
+      allow read: if signedIn();
+      allow write: if isL4();
+    }
+  }
+}

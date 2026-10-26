@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="270"
+                android:startColor="#020B15"
+                android:centerColor="#06263B"
+                android:endColor="#020B15" />
+        </shape>
+    </item>
+    <item android:gravity="center" android:width="220dp" android:height="220dp">
+        <bitmap
+            android:src="@drawable/cleanops_splash_logo"
+            android:gravity="center"
+            android:filter="true" />
+    </item>
+</layer-list>

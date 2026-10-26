@@ -1,0 +1,74 @@
+name: solid_waste_operations
+publish_to: none
+version: 4.9.5+16
+description: Enterprise offline-first solid waste collection operations platform.
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+  flutter: '>=3.22.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  provider: ^6.1.2
+  shared_preferences: ^2.5.3
+  flutter_secure_storage: ^9.2.4
+  connectivity_plus: ^6.1.4
+  uuid: ^4.5.1
+  intl: ^0.19.0
+  image_picker: ^1.1.2
+  hive_flutter: ^1.1.0
+  geolocator: ^13.0.2
+  camera: ^0.11.0+2
+  record: ^5.2.1
+  audioplayers: ^6.1.0
+  flutter_image_compress: ^2.4.0
+  path_provider: ^2.1.5
+  firebase_core: ^3.15.2
+  firebase_auth: ^5.6.2
+  cloud_firestore: ^5.6.11
+  firebase_storage: ^12.4.10
+  firebase_remote_config: ^5.4.7
+  cloud_functions: ^5.6.2
+  excel: ^4.0.6
+  archive: ^3.6.1
+  xml: ^6.5.0
+  pdf: ^3.11.3
+  file_picker: ^8.3.7
+  fl_chart: ^0.70.2
+  url_launcher: ^6.3.2
+  http: ^1.4.0
+  flutter_map: ^7.0.2
+  latlong2: ^0.9.1
+  printing: ^5.13.4
+  google_fonts: ^6.3.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  flutter_launcher_icons: ^0.14.3
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/app_icon.png
+    - assets/app_icon_foreground.png
+    - assets/brand/cleanops_logo_new.png
+    - assets/brand/cleanops_icon_new.png
+  fonts:
+    - family: NotoArabic
+      fonts:
+        - asset: assets/fonts/NotoSansArabic-Regular.ttf
+        - asset: assets/fonts/NotoSansArabic-Bold.ttf
+          weight: 700
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: assets/app_icon.png
+
+# Keep record platform packages on a mutually compatible API generation.
+dependency_overrides:
+  record_linux: 1.2.1
+  record_platform_interface: 1.2.0
